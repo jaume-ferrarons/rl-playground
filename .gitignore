@@ -1,0 +1,5 @@
+*.json
+.ipynb_checkpoints
+__pychache__
+*.pyc
+*.mp4
