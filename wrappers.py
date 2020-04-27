@@ -2,11 +2,15 @@ import gym
 from skimage.transform import resize
 from PIL import Image
 import numpy as np
+from tensorflow.keras.preprocessing.image import img_to_array, array_to_img
+from PIL import Image
 
 
 def black_and_white(img, size):
-    """To B&W using green channel"""
-    return (resize(img, (size[0], size[1])).dot([0.2989, 0.5870, 0.1140])/255.0).reshape(size)
+    img = img_to_array(array_to_img(img).resize(
+        (size[0], size[1]), Image.ANTIALIAS))
+    img = img.mean(-1, keepdims=True).astype('float32').reshape(size)/255.
+    return img
 
 
 class ActionMapWrapper(gym.ActionWrapper):
@@ -40,12 +44,25 @@ class EarlyStopWrapper(gym.Wrapper):
         next_state, reward, is_done, info = self.env.step(action)
         if reward < 0:
             self.n_negative += 1
-            if self.n_negative > 25:
+            if self.n_negative > 500:
                 reward = -5
                 is_done = True
         else:
             self.n_negative = 0
         return next_state, reward, is_done, info
+
+
+class FrameSkipper(gym.Wrapper):
+    def __init__(self, env, n_frames, action):
+        super().__init__(env)
+        self.n_frames = n_frames
+        self.action = action
+
+    def reset(self, **kwargs):
+        state = self.env.reset(**kwargs)
+        for _ in range(self.n_frames):
+            state = self.env.step(self.action)[0]
+        return state
 
 
 class MaxStepsWrapper(gym.Wrapper):

@@ -1,6 +1,16 @@
+from tensorflow.compat.v1.keras import models, layers, backend, optimizers
+import tensorflow.compat.v1 as tf
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras import models, layers, backend, optimizers
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+print("Tensorflow version:", tf.__version__)
+
+# tf.compat.v1.disable_eager_execution()
+tf.reset_default_graph()
+sess = tf.InteractiveSession()
 
 
 class QLearningAgent():
@@ -15,37 +25,47 @@ class QLearningAgent():
         # Init model
         if model is None:
             model = models.Sequential()
-            model.add(layers.Dense(20, input_shape=(
-                obs_size,), activation='elu'))
+            model.add(layers.Dense(20, input_shape=obs_size, activation='elu'))
             model.add(layers.Dense(10, activation='elu'))
             model.add(layers.Dense(n_actions))
-            model.compile(loss='mse', optimizer='sgd')
             model.summary()
         self.model = model
         self.use_target_network = use_target_network
+
+        self.state_ph = tf.placeholder(tf.float32, shape=(None, *obs_size))
+        self.actions_ph = tf.placeholder(tf.int32, shape=(None))
+        self.rewards_ph = tf.placeholder(tf.float32, shape=(None))
+        self.next_states_ph = tf.placeholder(
+            tf.float32, shape=(None, *obs_size))
+        self.is_done_ph = tf.placeholder(tf.float32, shape=(None))
+
+        self.trainable_variables = self.model.trainable_variables
         if use_target_network:
             self.target_network = tf.keras.models.clone_model(self.model)
-            self.update_target_network()
-        self.optimizer = optimizers.Adam(learning_rate)
+
+        self.loss = self.lossf(self.state_ph, self.actions_ph,
+                               self.rewards_ph, self.next_states_ph, self.is_done_ph)
+        self.set_learning_rate(self.lr)
+        self.update_target_network()
 
     def set_learning_rate(self, learning_rate):
-        self.lr = learning_rate
-        self.optimizer = optimizers.Adam(learning_rate)
+        self.train_step = tf.train.AdamOptimizer(learning_rate).minimize(
+            self.loss,
+            var_list=self.trainable_variables
+        )
+        sess.run(tf.global_variables_initializer())
 
-    @tf.function(experimental_relax_shapes=True)
     def lossf(self, state_ph, actions_ph, rewards_ph, next_states_ph, is_done_ph):
         q_values = self.model(state_ph)
         action_q_value = tf.reduce_sum(
-            q_values*tf.one_hot(actions_ph, self.n_actions), axis=1)
+            tf.one_hot(actions_ph, self.n_actions) * q_values, axis=1)
         if self.use_target_network:
             next_q_values = self.target_network(next_states_ph)
         else:
             next_q_values = self.model(next_states_ph)
         next_state_values = tf.reduce_max(next_q_values, axis=1)
-        rewards = tf.dtypes.cast(rewards_ph, tf.float32)
-        target_qvalues_for_actions = tf.where(is_done_ph,
-                                              rewards,
-                                              rewards + self.rd*next_state_values)
+        is_not_done = 1 - is_done_ph
+        target_qvalues_for_actions = rewards_ph + self.rd*next_state_values*is_not_done
         loss = (action_q_value - tf.stop_gradient(target_qvalues_for_actions))**2
         return tf.reduce_mean(loss)
 
@@ -71,11 +91,11 @@ class QLearningAgent():
             *map(lambda x: np.array([x]), [state, action, reward, next_state, is_done]))
 
     def train_on_batch(self, states, actions, rewards, next_states, is_dones):
-        def loss_f(): return self.lossf(states, actions, rewards,  next_states, is_dones)
-        self.optimizer.minimize(loss_f,
-                                var_list=self.model.trainable_variables
-                                )
-        return loss_f().numpy()
+        _, loss = sess.run([self.train_step, self.loss], {
+            self.state_ph: states, self.actions_ph: actions,
+            self.rewards_ph: rewards, self.next_states_ph: next_states, self.is_done_ph: is_dones
+        })
+        return loss
 
     def update_target_network(self):
         assert self.use_target_network
@@ -83,7 +103,14 @@ class QLearningAgent():
 
 
 if __name__ == "__main__":
-    agent = QLearningAgent(obs_size=1, n_actions=2)
+    agent = QLearningAgent(obs_size=(1,), n_actions=2, use_target_network=True)
+
+    # Check initial weights of target network are equal
+    w1 = agent.model.get_weights()
+    w2 = agent.target_network.get_weights()
+    assert np.all([np.all(a == b) for (a, b) in zip(w1, w2)]
+                  ), "All weights expected to be equal"
+
     q_a = agent.get_qa([1], 1)
     print(q_a)
     # Train agent on terminal state
@@ -106,3 +133,22 @@ if __name__ == "__main__":
     actions = [agent.next_action([1], 1.0) for _ in range(20)]
     assert len(np.unique(actions)
                ) > 1, "More than one action expected when not greedy"
+
+    w1 = agent.model.get_weights()
+    w2 = agent.target_network.get_weights()
+    assert not np.all([np.all(a == b) for (a, b) in zip(w1, w2)]
+                      ), "Weights expected to be different"
+    agent.update_target_network()
+    w1 = agent.model.get_weights()
+    w2 = agent.target_network.get_weights()
+    old_target = w2
+    assert np.all([np.all(a == b) for (a, b) in zip(w1, w2)]
+                  ), "Weights expected to be equal"
+
+    agent.train([1], 1, 6, [2], True)
+    w1 = agent.model.get_weights()
+    w2 = agent.target_network.get_weights()
+    assert not np.all([np.all(a == b) for (a, b) in zip(w1, w2)]
+                      ), "Weights expected to be different"
+    assert np.all([np.all(a == b) for (a, b) in zip(old_target, w2)]
+                  ), "Target should not be updated"

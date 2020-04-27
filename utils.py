@@ -1,3 +1,4 @@
+import pandas as pd
 from IPython.display import HTML, clear_output
 from IPython import display as ipythondisplay
 import glob
@@ -64,21 +65,24 @@ def play_in_video(env, video_path, agent=None, max_steps=None):
     show_video(video_path)
 
 
-def evaluate(env, agent=None, max_steps=None, times=1):
+def evaluate(env, agent=None, times=1, exploration_rate=0.0):
     total_rewards = []
     for _ in range(times):
         state = env.reset()
         total_reward = 0
-        while max_steps is None or max_steps > 0:
+        while True:
             if agent is None:
                 action = env.action_space.sample()
             else:
-                action = agent.next_action(state)
+                action = agent.next_action(state, exploration_rate)
             state, reward, done, info = env.step(action)
             total_reward += reward
-            if max_steps is not None:
-                max_steps -= 1
             if done:
                 break
         total_rewards.append(total_reward)
     return np.mean(total_rewards)
+
+
+def moving_average(x, span, **kw):
+    series = pd.DataFrame({'x': np.array(x)}).x
+    return series.ewm(span, **kw).mean().values
